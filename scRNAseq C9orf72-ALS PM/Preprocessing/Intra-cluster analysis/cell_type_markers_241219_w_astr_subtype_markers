@@ -1,0 +1,281 @@
+#!/usr/bin/env Rscript
+
+################################################################################
+# Script: D09_astrocyte_pseudobulk_generation.R
+# Description: Generate pseudobulk expression profiles from astrocyte subtypes
+#
+# This script:
+#   1. Loads labeled astrocyte dataset from C08
+#   2. Aggregates single-cell counts into pseudobulk by cluster and sample
+#   3. Filters for minimum cell count (≥10 cells per pseudobulk)
+#   4. Creates metadata for pseudobulk samples
+#   5. Prepares data structure for DESeq2 analysis
+#
+# Inputs:
+#   - results/08_astrocyte_characterization/labeled_astrocytes.rda: Labeled astrocytes
+#   - results/02_integration/filtered_metadata.csv: Sample metadata
+#
+# Outputs:
+#   - results/09_astrocyte_de/pseudobulk_data.rda: Pseudobulk counts and metadata
+#   - results/09_astrocyte_de/pseudobulk_metadata.csv: Pseudobulk sample info
+#
+# Note: Pseudobulking aggregates cells to increase power for differential
+#       expression analysis and better model biological replicates
+################################################################################
+
+# Load required libraries
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(Seurat)
+})
+
+# Initialize logging
+cat("\n")
+cat("========================================================================\n")
+cat("D09: Astrocyte Pseudobulk Generation\n")
+cat("Started:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("========================================================================\n\n")
+
+# Set random seed for reproducibility
+set.seed(123)
+
+# Define paths
+project_dir <- getwd()
+input_file <- "results/08_astrocyte_characterization/labeled_astrocytes.rda"
+metadata_file <- "results/02_integration/filtered_metadata.csv"
+output_dir <- "results/09_astrocyte_de"
+
+# Create output directory
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+  cat("Created output directory:", output_dir, "\n")
+}
+
+################################################################################
+# Load Data
+################################################################################
+
+cat("\n>>> Loading labeled astrocyte dataset...\n")
+if (!file.exists(input_file)) {
+  stop("Input file not found: ", input_file)
+}
+load(input_file)
+cat("Loaded", ncol(astrocytes), "astrocytes\n")
+
+cat("\n>>> Loading sample metadata...\n")
+sample_metadata <- read_csv(metadata_file, show_col_types = FALSE)
+groups <- unique(sample_metadata$group)
+samples <- as.character(unique(sample_metadata$sample))
+
+cat("Groups:", paste(groups, collapse = ", "), "\n")
+cat("Samples:", length(samples), "\n")
+
+################################################################################
+# Define Pseudobulking Variables
+################################################################################
+
+cat("\n>>> Defining pseudobulking strategy...\n")
+
+# Get unique cluster names
+cluster_names <- intersect(
+  unique(astrocytes$cluster_name),
+  unique(astrocytes$cluster_name)
+)
+cluster_names <- cluster_names[!is.na(cluster_names)]
+
+cat("Astrocyte clusters:", length(cluster_names), "\n")
+cat("  -", paste(cluster_names, collapse = "\n  - "), "\n")
+
+# Create combined variable: cluster_sample
+astrocytes$cluster_sample <- paste0(astrocytes$cluster_name, "_", astrocytes$sample)
+Idents(astrocytes) <- "cluster_sample"
+
+# Order cluster_samples properly
+cluster_samples <- unique(
+  astrocytes$cluster_sample[
+    order(
+      match(astrocytes$cluster_name, cluster_names),
+      match(astrocytes$sample, samples)
+    )
+  ]
+)
+
+cat("\nTotal possible cluster-sample combinations:", length(cluster_samples), "\n")
+
+################################################################################
+# Create Pseudobulks
+################################################################################
+
+cat("\n>>> Aggregating cells into pseudobulks...\n")
+
+# Join RNA layers if needed
+if (inherits(astrocytes[["RNA"]], "Assay5")) {
+  cat("Joining RNA layers...\n")
+  astrocytes[["RNA"]] <- JoinLayers(astrocytes[["RNA"]])
+}
+
+# Count cells per cluster-sample combination
+cell_metadata <- astrocytes@meta.data
+cell_counts <- cell_metadata %>%
+  group_by(cell_type, cluster_name, sample, cluster_sample) %>%
+  summarise(n_cells = n(), .groups = "drop")
+
+# Filter: keep only pseudobulks with ≥10 cells
+min_cells <- 10
+cat("Minimum cells per pseudobulk:", min_cells, "\n")
+
+cell_counts$pseudobulk_id <- NA
+cell_counts$pseudobulk_id[cell_counts$n_cells >= min_cells] <- 
+  cell_counts$cluster_sample[cell_counts$n_cells >= min_cells]
+
+# Add sample metadata
+sample_info <- sample_metadata[
+  match(cell_counts$sample, sample_metadata$sample),
+  setdiff(colnames(sample_metadata), "sample")
+]
+
+pseudobulk_metadata <- bind_cols(cell_counts, sample_info)
+pseudobulk_metadata <- pseudobulk_metadata[
+  order(match(pseudobulk_metadata$cluster_sample, cluster_samples)),
+]
+
+cat("\nPseudobulks before filtering:", nrow(cell_counts), "\n")
+cat("Pseudobulks after filtering (≥", min_cells, "cells):", 
+    sum(!is.na(pseudobulk_metadata$pseudobulk_id)), "\n")
+
+# Save metadata
+metadata_file <- file.path(output_dir, "pseudobulk_metadata.csv")
+write_csv(pseudobulk_metadata, metadata_file)
+cat("Saved pseudobulk metadata to:", metadata_file, "\n")
+
+################################################################################
+# Generate Pseudobulk Count Matrix
+################################################################################
+
+cat("\n>>> Creating pseudobulk count matrix...\n")
+
+# Create list of cell IDs for each cluster_sample
+cell_list <- lapply(cluster_samples, function(cs) {
+  rownames(cell_metadata)[cell_metadata$cluster_sample == cs]
+})
+names(cell_list) <- cluster_samples
+
+# Keep only pseudobulks with ≥10 cells
+cell_list <- cell_list[lengths(cell_list) >= min_cells]
+
+cat("Valid pseudobulks:", length(cell_list), "\n")
+
+# Sum counts across cells for each pseudobulk
+cat("Aggregating counts (this may take a few minutes)...\n")
+
+pseudobulk_counts_list <- list()
+sc_counts <- astrocytes[["RNA"]]$counts
+
+total_bulks <- length(cell_list)
+for (i in seq_along(cell_list)) {
+  bulk_id <- names(cell_list)[i]
+  bulk_cells <- cell_list[[i]]
+  
+  pseudobulk_counts_list[[bulk_id]] <- Matrix::rowSums(sc_counts[, bulk_cells])
+  
+  if (i %% 10 == 0) {
+    cat("  Processed", i, "of", total_bulks, "pseudobulks\n")
+  }
+}
+
+# Convert to matrix
+pseudobulk_matrix <- as.matrix(as.data.frame(pseudobulk_counts_list))
+
+cat("\nPseudobulk matrix dimensions:\n")
+cat("  Genes:", nrow(pseudobulk_matrix), "\n")
+cat("  Pseudobulks:", ncol(pseudobulk_matrix), "\n")
+
+# Filter metadata to match pseudobulks
+pseudobulk_metadata <- pseudobulk_metadata[!is.na(pseudobulk_metadata$pseudobulk_id), ]
+
+################################################################################
+# Create Pseudobulk Data Object
+################################################################################
+
+cat("\n>>> Assembling pseudobulk data object...\n")
+
+pseudobulk_data <- list(
+  metadata = pseudobulk_metadata,
+  cell_list = cell_list,
+  counts = pseudobulk_matrix
+)
+
+# Save pseudobulk data
+output_file <- file.path(output_dir, "pseudobulk_data.rda")
+save(pseudobulk_data, file = output_file)
+cat("Saved pseudobulk data to:", output_file, "\n")
+
+################################################################################
+# Summary Statistics
+################################################################################
+
+cat("\n>>> Computing summary statistics...\n")
+
+# Cells per pseudobulk
+cells_per_bulk <- lengths(cell_list)
+cat("\nCells per pseudobulk:\n")
+cat("  Mean:", round(mean(cells_per_bulk), 1), "\n")
+cat("  Median:", median(cells_per_bulk), "\n")
+cat("  Range:", min(cells_per_bulk), "-", max(cells_per_bulk), "\n")
+
+# Pseudobulks per cluster
+bulks_per_cluster <- pseudobulk_metadata %>%
+  group_by(cluster_name) %>%
+  summarise(n_pseudobulks = n(), .groups = "drop")
+
+cat("\nPseudobulks per astrocyte cluster:\n")
+for (i in seq_len(nrow(bulks_per_cluster))) {
+  cat("  ", bulks_per_cluster$cluster_name[i], ":", 
+      bulks_per_cluster$n_pseudobulks[i], "\n")
+}
+
+# Pseudobulks per group
+bulks_per_group <- pseudobulk_metadata %>%
+  group_by(group) %>%
+  summarise(n_pseudobulks = n(), .groups = "drop")
+
+cat("\nPseudobulks per group:\n")
+for (i in seq_len(nrow(bulks_per_group))) {
+  cat("  ", bulks_per_group$group[i], ":", 
+      bulks_per_group$n_pseudobulks[i], "\n")
+}
+
+# Pseudobulks per cluster per group
+bulks_per_cluster_group <- pseudobulk_metadata %>%
+  group_by(cluster_name, group) %>%
+  summarise(n_pseudobulks = n(), .groups = "drop")
+
+cat("\nPseudobulks per cluster per group:\n")
+for (i in seq_len(nrow(bulks_per_cluster_group))) {
+  cat("  ", bulks_per_cluster_group$cluster_name[i], "-", 
+      bulks_per_cluster_group$group[i], ":", 
+      bulks_per_cluster_group$n_pseudobulks[i], "\n")
+}
+
+################################################################################
+# Completion Summary
+################################################################################
+
+cat("\n")
+cat("========================================================================\n")
+cat("D09: Astrocyte Pseudobulk Generation Complete\n")
+cat("Completed:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("========================================================================\n")
+cat("\nSummary:\n")
+cat("  Total astrocytes:", ncol(astrocytes), "\n")
+cat("  Astrocyte clusters:", length(cluster_names), "\n")
+cat("  Valid pseudobulks:", ncol(pseudobulk_matrix), "\n")
+cat("  Genes in matrix:", nrow(pseudobulk_matrix), "\n")
+cat("  Mean cells/pseudobulk:", round(mean(cells_per_bulk), 1), "\n")
+cat("\nOutput files:\n")
+cat("  -", output_file, "\n")
+cat("  -", metadata_file, "\n")
+cat("\nNext steps:\n")
+cat("  1. Run D10_astrocyte_deseq2_analysis.R for differential expression\n")
+cat("  2. DESeq2 will identify DEGs between C9-ALS and control in each cluster\n")
+cat("========================================================================\n\n")
