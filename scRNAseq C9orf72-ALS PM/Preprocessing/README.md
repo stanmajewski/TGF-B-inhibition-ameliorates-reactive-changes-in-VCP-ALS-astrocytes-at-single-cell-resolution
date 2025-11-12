@@ -309,44 +309,6 @@ results/
 
 ---
 
-## Computational Requirements
-
-### Memory
-- Minimum: 32 GB RAM
-- Recommended: 64+ GB RAM for large datasets (>100,000 cells)
-
-### Storage
-- ~10-20 GB per sample for intermediate files
-- Final integrated objects: 5-10 GB depending on dataset size
-
-### Runtime
-- C01: 30-60 minutes
-- C02: 1-2 hours
-- C03: 1-2 hours
-- C04: 30-60 minutes
-- C05: 30-60 minutes
-
----
-
-## Troubleshooting
-
-### Memory Issues
-- Reduce `ncells` parameter in SCTransform
-- Process samples in batches
-- Increase system swap space
-
-### Integration Quality
-- Check filter statistics - ensure sufficient cells per sample
-- Review UMAP split by sample
-- Adjust Harmony parameters if needed
-
-### Clustering
-- Test multiple resolutions
-- Verify marker gene expression patterns
-- Check for over/under-clustering
-
----
-
 ## Citation
 
 If using this pipeline, please cite:
