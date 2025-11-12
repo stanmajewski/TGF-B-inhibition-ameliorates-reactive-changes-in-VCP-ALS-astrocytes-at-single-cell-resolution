@@ -1,0 +1,231 @@
+message("\n\n##########################################################################\n",
+        "# Start 08: Functional heatmap creation ", Sys.time(),
+        "\n##########################################################################\n",
+        "\n   Create functional heatmap with cluster annotations",
+        "\n##########################################################################\n\n")
+
+#set environment and main directory
+main_dir = getwd()
+setwd(main_dir)
+
+# Open packages necessary for analysis.
+library(Seurat)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+
+#specify script/output index as prefix for file names
+script_ind = "08_"
+
+#specify output directory
+out_dir = paste0(main_dir, "/results/")
+
+###########################################################
+#functions
+###########################################################
+
+pal = function(v){
+  v2 = length(unique(v))
+  if (v2 == 2){
+    p2 = c("grey", "blue")
+  } else if (v2 ==3){
+    p2 = c("blue", "grey", "orange")
+  } else if (v2<6){
+    p2 = matlab.like(6)[1:v2]
+  } else {
+    p2 = matlab.like(v2)
+  }
+  return(p2)
+}
+
+#load dataset
+load(file = paste0(out_dir, "04_seur_integr_labelled.rda")) 
+
+Idents(seur) <- "SCT_snn_res.0.3"
+
+###########################################################
+# Cluster Marker Identification
+###########################################################
+
+message("\n\n          *** Identifying cluster markers... ", Sys.time(),"\n\n")
+
+# Find markers for every cluster compared to all remaining cells, report only the positive ones
+seur.markers <- FindAllMarkers(seur, only.pos = TRUE)
+
+# Save markers
+write.csv(seur.markers, file.path(out_dir, paste0(script_ind, "cluster_markers_positive.csv")), row.names = FALSE)
+
+# Get top markers per cluster (adjust number as needed)
+top_markers <- seur.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) %>%
+  arrange(cluster, -avg_log2FC)
+
+###########################################################
+# Prepare expression matrix
+###########################################################
+
+message("\n\n          *** Preparing expression matrix... ", Sys.time(),"\n\n")
+
+# Make sure we're using SCT assay and scale the genes
+DefaultAssay(seur) <- "SCT"
+seur <- ScaleData(seur, features = top_markers$gene)
+
+# Get average expression per cluster (much faster than all cells)
+Idents(seur) <- seur$SCT_snn_res.0.3
+avg_expr <- AverageExpression(seur, features = top_markers$gene, assays = "SCT", slot = "scale.data")
+expr_matrix <- as.matrix(avg_expr$SCT)
+
+# Fix column names to remove the 'g' prefix
+colnames(expr_matrix) <- gsub("^g", "", colnames(expr_matrix))
+
+###########################################################
+# Define cluster annotations and functional categories
+###########################################################
+
+# Define cluster annotations
+cluster_annotations <- data.frame(
+  cluster = c("1", "2", "5", "15", "16", "3", "8", "4", "9", "11", "14", "6", "13", "7", "10", "12"),
+  category = c(rep("Cilium/Metabolism", 5), rep("Actin", 2), rep("Splicing/Development", 4), 
+               rep("Immune Response", 2), rep("Proliferation", 2), "ECM"),
+  stringsAsFactors = FALSE
+)
+
+# Define the order of clusters by category
+cluster_order_new <- c("1", "2", "5", "15", "16",  # Cilium/Metabolism
+                       "3", "8",                     # Actin
+                       "4", "9", "11", "14",        # Splicing/Development  
+                       "6", "13",                    # Immune Response
+                       "7", "10",                    # Proliferation
+                       "12")                         # ECM
+
+# Reorder expression matrix according to functional groups
+expr_matrix_ordered <- expr_matrix[, cluster_order_new]
+
+# Create category colors
+category_colors <- c(
+  "Cilium/Metabolism" = "#FF6B35",      # Orange
+  "Actin" = "#F7931E",                  # Light orange
+  "Splicing/Development" = "#DC143C",   # Red
+  "Immune Response" = "#2E8B57",        # Green
+  "Proliferation" = "#FFD700",          # Yellow
+  "ECM" = "#4169E1"                     # Blue
+)
+
+###########################################################
+# Create heatmap annotations
+###########################################################
+
+message("\n\n          *** Creating heatmap annotations... ", Sys.time(),"\n\n")
+
+# Create column annotation for cluster categories (bottom annotation)
+cluster_categories <- cluster_annotations$category[match(colnames(expr_matrix_ordered), cluster_annotations$cluster)]
+
+col_ha <- columnAnnotation(
+  Category = cluster_categories,
+  col = list(Category = category_colors),
+  height = unit(0.4, "cm"),
+  annotation_name_gp = gpar(fontsize = 0),
+  show_legend = FALSE
+)
+
+# Select important genes to label
+important_genes <- c("CCL5", "CXCL10", "CXCL9", "IL10", "CHI3L1", "MMP13", "AQP4", 
+                     "CDC20", "PLK1", "RRM2", "EXO1", "IFNB1", "AREG", "TAC1", 
+                     "PAX7", "NEUROD2", "EGR1", "EGR2", "ARC")
+
+# Find positions of important genes in the clustered matrix
+important_gene_positions <- which(rownames(expr_matrix_ordered) %in% important_genes)
+important_gene_names <- rownames(expr_matrix_ordered)[important_gene_positions]
+
+# Create right annotation with gene markers and lines
+right_anno <- rowAnnotation(
+  genes = anno_mark(
+    at = important_gene_positions,
+    labels = important_gene_names,
+    labels_gp = gpar(fontsize = 11, fontface = "italic"),
+    padding = unit(1, "mm"),
+    link_width = unit(5, "mm"),
+    link_gp = gpar(lwd = 0.8)
+  ),
+  width = unit(3, "cm")
+)
+
+###########################################################
+# Create and save functional heatmap
+###########################################################
+
+message("\n\n          *** Creating functional heatmap... ", Sys.time(),"\n\n")
+
+pdf(file.path(out_dir, paste0(script_ind, "functional_heatmap.pdf")), width = 12, height = 8)
+
+# Create custom scaled expression legend
+scaled_legend <- Legend(
+  col_fun = colorRamp2(c(-1, 0, 0.5, 1, 1.5, 2), c("darkblue", "white", "lightcoral", "red", "darkred", "maroon")),
+  title = "",
+  labels_gp = gpar(fontsize = 11),
+  legend_height = unit(4, "cm"),
+  border = FALSE
+)
+
+# Create heatmap without legend
+ht <- Heatmap(
+  expr_matrix_ordered,
+  name = "Scaled\nexpression",
+  col = colorRamp2(c(-1, 0, 0.5, 1, 1.5, 2), c("darkblue", "white", "lightcoral", "red", "darkred", "maroon")),
+  
+  # Row settings
+  show_row_names = FALSE,
+  
+  # Column settings
+  column_names_gp = gpar(fontsize = 11, fontface = "bold"),
+  column_names_rot = 90,
+  bottom_annotation = col_ha,
+  
+  # Add the gene annotation with lines
+  right_annotation = right_anno,
+  
+  # Clustering
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  show_row_dend = FALSE,
+  
+  # Clean appearance
+  border = FALSE,
+  rect_gp = gpar(col = NA),
+  
+  # Size
+  width = unit(8, "cm"),
+  height = unit(10, "cm"),
+  
+  # Hide legend
+  show_heatmap_legend = FALSE
+)
+
+# Create separate legend for categories
+category_legend <- Legend(
+  labels = names(category_colors),
+  legend_gp = gpar(fill = category_colors),
+  title = "",
+  labels_gp = gpar(fontsize = 11)
+)
+
+# Draw heatmap and then add legends manually
+draw(ht)
+
+# Add the scaled expression legend
+draw(scaled_legend, x = unit(0.68, "npc"), y = unit(0.65, "npc"), just = c("left", "center"))
+
+# Add "Scaled expression" text
+grid.text("Scaled\nexpression", x = unit(0.72, "npc"), y = unit(0.65, "npc"), 
+          just = c("left", "center"), gp = gpar(fontsize = 11, fontface = "bold"))
+
+# Add the category legend
+draw(category_legend, x = unit(0.68, "npc"), y = unit(0.45, "npc"), just = c("left", "top"))
+
+dev.off()
+
+message("\n\n##########################################################################\n",
+        "# Completed 08 ", Sys.time(),
+        "\n##########################################################################\n",
+        "\n##########################################################################\n\n\n")
