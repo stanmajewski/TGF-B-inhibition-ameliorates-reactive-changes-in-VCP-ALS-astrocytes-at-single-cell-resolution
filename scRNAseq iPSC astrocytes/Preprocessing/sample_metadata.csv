@@ -1,0 +1,17 @@
+sample,geo_accession,dataset_folder,Donor,group,treatment,Sex,Mutation Loci,Isogenic,Donor Age,Age of onset
+CTRL1_U,N/A,data/cellranger_outputs/CTRL1_U/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,untreated,M,N/A,,78,NA
+CTRL1_SB,N/A,data/cellranger_outputs/CTRL1_SB/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,SB431542,M,N/A,,78,NA
+CTRL2_U,N/A,data/cellranger_outputs/CTRL2_U/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,untreated,M,N/A,,64,NA
+CTRL2_SB,N/A,data/cellranger_outputs/CTRL2_SB/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,SB431542,M,N/A,,64,NA
+CTRL3_U,N/A,data/cellranger_outputs/CTRL3_U/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,untreated,F,N/A,,Fetal,NA
+CTRL3_SB,N/A,data/cellranger_outputs/CTRL3_SB/count/sample_filtered_feature_bc_matrix/,N/A,ctrl,SB431542,F,N/A,,Fetal,NA
+CTRL4_U,N/A,data/cellranger_outputs/CTRL4_U/count/sample_filtered_feature_bc_matrix/,NCRM,ctrl,untreated,M,N/A,,Fetal,NA
+CTRL4_SB,N/A,data/cellranger_outputs/CTRL4_SB/count/sample_filtered_feature_bc_matrix/,NCRM,ctrl,SB431542,M,N/A,,Fetal,NA
+Mut1.1_U,N/A,data/cellranger_outputs/Mut1.1_U/count/sample_filtered_feature_bc_matrix/,Mut1.1,VCP,untreated,M,R191Q,,42,36
+Mut1.1_SB,N/A,data/cellranger_outputs/Mut1.1_SB/count/sample_filtered_feature_bc_matrix/,Mut1.1,VCP,SB431542,M,R191Q,,42,36
+Mut2.1_U,N/A,data/cellranger_outputs/Mut2.1_U/count/sample_filtered_feature_bc_matrix/,Mut2.1,VCP,untreated,F,R155C,,43,40
+Mut2.1_SB,N/A,data/cellranger_outputs/Mut2.1_SB/count/sample_filtered_feature_bc_matrix/,Mut2.1,VCP,SB431542,F,R155C,,43,40
+NCRMC2_U,N/A,data/cellranger_outputs/NCRMC2_U/count/sample_filtered_feature_bc_matrix/,NCRM,VCP,untreated,M,R191Q,R191Q inserted,Fetal,NA
+NCRMC2_SB,N/A,data/cellranger_outputs/NCRMC2_SB/count/sample_filtered_feature_bc_matrix/,NCRM,VCP,SB431542,M,R191Q,R191Q inserted,Fetal,NA
+NCRME6_U,N/A,data/cellranger_outputs/NCRME6_U/count/sample_filtered_feature_bc_matrix/,NCRM,VCP,untreated,M,R191Q,R191Q inserted,Fetal,NA
+NCRME6_SB,N/A,data/cellranger_outputs/NCRME6_SB/count/sample_filtered_feature_bc_matrix/,NCRM,VCP,SB431542,M,R191Q,R191Q inserted,Fetal,NA
