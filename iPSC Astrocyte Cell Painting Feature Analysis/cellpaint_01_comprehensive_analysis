@@ -1,0 +1,519 @@
+#!/usr/bin/env Rscript
+
+################################################################################
+# Cell Painting Comprehensive Statistical Analysis
+################################################################################
+#
+# Purpose:
+#   Comprehensive analysis of Cell Painting features comparing VCP-ALS 
+#   untreated and treated conditions versus healthy controls. Performs 
+#   statistical testing, classification of treatment effects, and generates
+#   publication-quality visualizations.
+#
+# Input Files:
+#   - ALS_Untreated_vs_Control_statistical_results.csv
+#   - ALS_Treated_vs_Control_statistical_results.csv
+#
+# Output Files:
+#   - Multiple PNG plots (volcano, heatmaps, treatment effects)
+#   - CSV files with analysis results and feature classifications
+#   - Summary statistics tables
+#
+# Author: Analysis Pipeline
+# Date: 2024
+#
+################################################################################
+
+# Load required libraries
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(dplyr)
+  library(ggplot2)
+  library(gridExtra)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(corrplot)
+  library(VennDiagram)
+  library(ggrepel)
+  library(scales)
+  library(optparse)
+})
+
+################################################################################
+# Command-line Arguments
+################################################################################
+
+option_list <- list(
+  make_option(c("-u", "--untreated"), type = "character",
+              default = "ALS_Untreated_vs_Control_statistical_results.csv",
+              help = "Path to untreated vs control statistical results [default: %default]",
+              metavar = "FILE"),
+  
+  make_option(c("-t", "--treated"), type = "character",
+              default = "ALS_Treated_vs_Control_statistical_results.csv",
+              help = "Path to treated vs control statistical results [default: %default]",
+              metavar = "FILE"),
+  
+  make_option(c("-o", "--output"), type = "character",
+              default = "cellpaint_analysis_results",
+              help = "Output directory name [default: %default]",
+              metavar = "DIR"),
+  
+  make_option(c("-p", "--pvalue"), type = "double",
+              default = 0.05,
+              help = "P-value threshold for significance [default: %default]",
+              metavar = "NUMBER")
+)
+
+opt_parser <- OptionParser(option_list = option_list,
+                          description = "\nCell Painting Comprehensive Analysis Pipeline")
+opt <- parse_args(opt_parser)
+
+################################################################################
+# Setup and Configuration
+################################################################################
+
+# Create output directory
+if (!dir.exists(opt$output)) {
+  dir.create(opt$output, recursive = TRUE)
+  cat(sprintf("[%s] Created output directory: %s\n", 
+              Sys.time(), opt$output))
+}
+
+# Configure plotting theme
+theme_set(theme_minimal() + 
+            theme(plot.title = element_text(hjust = 0.5, size = 24, face = "bold"),
+                  axis.text = element_text(size = 22),
+                  axis.title = element_text(size = 22, face = "bold"),
+                  legend.text = element_text(size = 22),
+                  legend.title = element_text(size = 22, face = "bold"),
+                  strip.text = element_text(size = 22, face = "bold")))
+
+cat(sprintf("[%s] Configuration complete\n", Sys.time()))
+cat(sprintf("  P-value threshold: %.3f\n", opt$pvalue))
+cat(sprintf("  Output directory: %s\n", opt$output))
+
+################################################################################
+# Functions
+################################################################################
+
+# Preprocess data with condition labels
+preprocess_data <- function(data, condition_name) {
+  data$Condition <- condition_name
+  data$neg_log10_p <- -log10(data$P_value)
+  data$neg_log10_p_fdr <- -log10(data$P_value_FDR)
+  data$abs_effect_size <- abs(data$Effect_size)
+  data$Significant_FDR_logical <- as.logical(data$Significant_FDR)
+  return(data)
+}
+
+# Extract feature category from feature names
+extract_feature_category <- function(feature_names) {
+  categories <- rep("Other", length(feature_names))
+  
+  # Categorize based on cellular compartment/feature type
+  categories[grepl("Nuclei", feature_names, ignore.case = TRUE)] <- "Nuclear"
+  categories[grepl("Cytoplasm", feature_names, ignore.case = TRUE)] <- "Cytoplasmic"
+  categories[grepl("Mitochondria", feature_names, ignore.case = TRUE)] <- "Mitochondrial"
+  categories[grepl("Granularity", feature_names, ignore.case = TRUE)] <- "Texture/Granularity"
+  categories[grepl("Intensity", feature_names, ignore.case = TRUE)] <- "Intensity"
+  categories[grepl("Texture", feature_names, ignore.case = TRUE)] <- "Texture"
+  categories[grepl("Correlation", feature_names, ignore.case = TRUE)] <- "Correlation"
+  
+  return(categories)
+}
+
+################################################################################
+# Load and Preprocess Data
+################################################################################
+
+cat(sprintf("\n[%s] Loading input data...\n", Sys.time()))
+
+# Check if input files exist
+if (!file.exists(opt$untreated)) {
+  stop(sprintf("Untreated data file not found: %s", opt$untreated))
+}
+if (!file.exists(opt$treated)) {
+  stop(sprintf("Treated data file not found: %s", opt$treated))
+}
+
+# Load datasets
+untreated_data <- read.csv(opt$untreated, stringsAsFactors = FALSE)
+treated_data <- read.csv(opt$treated, stringsAsFactors = FALSE)
+
+cat(sprintf("  Loaded untreated data: %d features\n", nrow(untreated_data)))
+cat(sprintf("  Loaded treated data: %d features\n", nrow(treated_data)))
+
+# Preprocess datasets
+untreated_processed <- preprocess_data(untreated_data, "Untreated")
+treated_processed <- preprocess_data(treated_data, "Treated")
+
+################################################################################
+# Analysis Part 1: VCP-ALS Untreated vs Control
+################################################################################
+
+cat(sprintf("\n[%s] ===== VCP-ALS UNTREATED VS CONTROL ANALYSIS =====\n", Sys.time()))
+
+# Summary statistics
+n_total <- nrow(untreated_processed)
+n_sig_05 <- sum(untreated_processed$P_value < 0.05)
+n_sig_01 <- sum(untreated_processed$P_value < 0.01)
+n_sig_001 <- sum(untreated_processed$P_value < 0.001)
+n_sig_fdr <- sum(untreated_processed$Significant_FDR_logical, na.rm = TRUE)
+
+cat(sprintf("  Total features: %d\n", n_total))
+cat(sprintf("  Significant (p < 0.05): %d (%.1f%%)\n", n_sig_05, 100 * n_sig_05/n_total))
+cat(sprintf("  Significant (p < 0.01): %d (%.1f%%)\n", n_sig_01, 100 * n_sig_01/n_total))
+cat(sprintf("  Significant (p < 0.001): %d (%.1f%%)\n", n_sig_001, 100 * n_sig_001/n_total))
+cat(sprintf("  Significant (FDR corrected): %d (%.1f%%)\n", n_sig_fdr, 100 * n_sig_fdr/n_total))
+
+# Extract significant features
+untreated_significant <- untreated_processed[untreated_processed$P_value < opt$pvalue, ]
+untreated_significant <- untreated_significant[order(untreated_significant$P_value), ]
+untreated_significant$direction <- ifelse(untreated_significant$Mean_difference > 0, 
+                                         "Increased", "Decreased")
+untreated_significant$category <- extract_feature_category(untreated_significant$Feature)
+
+cat(sprintf("\n  Top 10 most differential features:\n"))
+top10 <- untreated_significant[1:min(10, nrow(untreated_significant)), 
+                               c("Feature", "P_value", "Mean_difference", "Effect_size", "direction")]
+print(top10, row.names = FALSE)
+
+################################################################################
+# Analysis Part 2: Treatment Effect Comparison
+################################################################################
+
+cat(sprintf("\n[%s] ===== TREATMENT EFFECT ANALYSIS =====\n", Sys.time()))
+
+# Summary for treated condition
+n_treated_sig <- sum(treated_processed$P_value < opt$pvalue)
+cat(sprintf("  Treated condition significant features: %d (%.1f%%)\n", 
+            n_treated_sig, 100 * n_treated_sig/nrow(treated_processed)))
+
+# Merge datasets for comparison
+comparison_data <- merge(untreated_processed, treated_processed, 
+                        by = "Feature", suffixes = c("_untreated", "_treated"))
+comparison_data <- comparison_data[complete.cases(comparison_data), ]
+
+cat(sprintf("  Merged dataset: %d features\n", nrow(comparison_data)))
+
+# Calculate treatment effect metrics
+comparison_data$effect_size_change <- comparison_data$Effect_size_treated - 
+                                      comparison_data$Effect_size_untreated
+comparison_data$p_value_change <- comparison_data$neg_log10_p_treated - 
+                                  comparison_data$neg_log10_p_untreated
+
+# Classify treatment impact
+comparison_data$treatment_impact <- "Neutral"
+
+# Corrective: untreated significant but treated becomes less significant
+corrective_idx <- (comparison_data$P_value_untreated < opt$pvalue & 
+                   comparison_data$P_value_treated >= comparison_data$P_value_untreated)
+comparison_data$treatment_impact[corrective_idx] <- "Corrective"
+
+# Exacerbating: untreated not significant but treated becomes significant
+exacerbating_idx <- (comparison_data$P_value_untreated >= opt$pvalue & 
+                     comparison_data$P_value_treated < opt$pvalue)
+comparison_data$treatment_impact[exacerbating_idx] <- "Exacerbating"
+
+# Both significant: treated has larger effect in same direction
+both_sig_worse <- (comparison_data$P_value_untreated < opt$pvalue & 
+                   comparison_data$P_value_treated < opt$pvalue & 
+                   sign(comparison_data$Effect_size_untreated) == sign(comparison_data$Effect_size_treated) &
+                   abs(comparison_data$Effect_size_treated) > abs(comparison_data$Effect_size_untreated))
+comparison_data$treatment_impact[both_sig_worse] <- "Exacerbating"
+
+# Both significant: treated has smaller effect
+both_sig_better <- (comparison_data$P_value_untreated < opt$pvalue & 
+                    comparison_data$P_value_treated < opt$pvalue & 
+                    sign(comparison_data$Effect_size_untreated) == sign(comparison_data$Effect_size_treated) &
+                    abs(comparison_data$Effect_size_treated) < abs(comparison_data$Effect_size_untreated))
+comparison_data$treatment_impact[both_sig_better] <- "Corrective"
+
+# Add categories
+comparison_data$category <- extract_feature_category(comparison_data$Feature)
+
+# Treatment impact summary
+treatment_summary <- table(comparison_data$treatment_impact)
+cat(sprintf("\n  Treatment Impact Classification:\n"))
+for (impact in names(treatment_summary)) {
+  cat(sprintf("    %s: %d features (%.1f%%)\n", 
+              impact, treatment_summary[impact], 
+              100 * treatment_summary[impact]/nrow(comparison_data)))
+}
+
+# Identify top features by treatment response
+corrective_features <- comparison_data[comparison_data$treatment_impact == "Corrective", ]
+corrective_features <- corrective_features[order(abs(corrective_features$effect_size_change), 
+                                                 decreasing = TRUE), ]
+
+exacerbating_features <- comparison_data[comparison_data$treatment_impact == "Exacerbating", ]
+exacerbating_features <- exacerbating_features[order(abs(exacerbating_features$effect_size_change), 
+                                                      decreasing = TRUE), ]
+
+if (nrow(corrective_features) > 0) {
+  cat(sprintf("\n  Top 5 corrective features (treatment reduces VCP signature):\n"))
+  top_corr <- head(corrective_features, 5)[, c("Feature", "Effect_size_untreated", 
+                                                "Effect_size_treated", "P_value_untreated", 
+                                                "P_value_treated")]
+  print(top_corr, row.names = FALSE)
+}
+
+if (nrow(exacerbating_features) > 0) {
+  cat(sprintf("\n  Top 5 exacerbating features (treatment worsens signature):\n"))
+  top_exac <- head(exacerbating_features, 5)[, c("Feature", "Effect_size_untreated", 
+                                                  "Effect_size_treated", "P_value_untreated", 
+                                                  "P_value_treated")]
+  print(top_exac, row.names = FALSE)
+}
+
+################################################################################
+# Generate Visualizations
+################################################################################
+
+cat(sprintf("\n[%s] Generating visualizations...\n", Sys.time()))
+
+# Plot 1: Enhanced volcano plot
+sig_colors <- ifelse(untreated_processed$P_value < opt$pvalue, 
+                    ifelse(untreated_processed$Mean_difference > 0, "red", "blue"),
+                    "grey70")
+
+p1_volcano <- ggplot(untreated_processed, aes(x = Mean_difference, y = neg_log10_p)) +
+  geom_point(alpha = 0.5, size = 3, color = sig_colors) +
+  geom_hline(yintercept = -log10(opt$pvalue), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "black", alpha = 0.5) +
+  labs(title = "VCP-ALS Untreated vs Control",
+       subtitle = sprintf("Volcano plot of differential features (p < %.3f)", opt$pvalue),
+       x = "Mean Difference (Effect Size)",
+       y = "-log₁₀(p-value)") +
+  annotate("text", x = max(untreated_processed$Mean_difference) * 0.8, 
+           y = max(untreated_processed$neg_log10_p) * 0.95,
+           label = sprintf("Increased in VCP: %d", 
+                         sum(untreated_processed$P_value < opt$pvalue & 
+                             untreated_processed$Mean_difference > 0)),
+           size = 8, color = "red", fontface = "bold") +
+  annotate("text", x = min(untreated_processed$Mean_difference) * 0.8, 
+           y = max(untreated_processed$neg_log10_p) * 0.95,
+           label = sprintf("Decreased in VCP: %d", 
+                         sum(untreated_processed$P_value < opt$pvalue & 
+                             untreated_processed$Mean_difference < 0)),
+           size = 8, color = "blue", fontface = "bold")
+
+ggsave(file.path(opt$output, "01_volcano_plot_enhanced.png"), 
+       p1_volcano, width = 14, height = 10, dpi = 300)
+cat("  Saved: 01_volcano_plot_enhanced.png\n")
+
+# Plot 2: Top upregulated features
+if (nrow(untreated_significant) > 0) {
+  top_up <- head(untreated_significant[untreated_significant$direction == "Increased", ], 15)
+  
+  if (nrow(top_up) > 0) {
+    top_up$Feature_short <- substr(gsub("_", " ", top_up$Feature), 1, 50)
+    
+    p2a_top_up <- ggplot(top_up, aes(x = reorder(Feature_short, abs(Effect_size)), 
+                                      y = abs(Effect_size))) +
+      geom_col(fill = "firebrick", alpha = 0.8) +
+      geom_text(aes(label = sprintf("%.2f", abs(Effect_size))), 
+                hjust = -0.2, size = 6, fontface = "bold") +
+      coord_flip() +
+      labs(title = "Top 15 Increased Features in VCP-ALS",
+           subtitle = "Features significantly elevated in untreated VCP vs controls",
+           x = "", y = "Absolute Effect Size") +
+      theme(axis.text.y = element_text(size = 16))
+    
+    ggsave(file.path(opt$output, "02a_top_upregulated_features.png"), 
+           p2a_top_up, width = 16, height = 12, dpi = 300)
+    cat("  Saved: 02a_top_upregulated_features.png\n")
+  }
+  
+  # Top downregulated features
+  top_down <- head(untreated_significant[untreated_significant$direction == "Decreased", ], 15)
+  
+  if (nrow(top_down) > 0) {
+    top_down$Feature_short <- substr(gsub("_", " ", top_down$Feature), 1, 50)
+    
+    p2b_top_down <- ggplot(top_down, aes(x = reorder(Feature_short, abs(Effect_size)), 
+                                          y = abs(Effect_size))) +
+      geom_col(fill = "steelblue", alpha = 0.8) +
+      geom_text(aes(label = sprintf("%.2f", abs(Effect_size))), 
+                hjust = -0.2, size = 6, fontface = "bold") +
+      coord_flip() +
+      labs(title = "Top 15 Decreased Features in VCP-ALS",
+           subtitle = "Features significantly reduced in untreated VCP vs controls",
+           x = "", y = "Absolute Effect Size") +
+      theme(axis.text.y = element_text(size = 16))
+    
+    ggsave(file.path(opt$output, "02b_top_downregulated_features.png"), 
+           p2b_top_down, width = 16, height = 12, dpi = 300)
+    cat("  Saved: 02b_top_downregulated_features.png\n")
+  }
+}
+
+# Plot 3: Category distribution
+if (nrow(untreated_significant) > 0) {
+  category_counts <- untreated_significant %>%
+    group_by(category, direction) %>%
+    summarise(count = n(), .groups = "drop")
+  
+  p3_category <- ggplot(category_counts, aes(x = reorder(category, count), 
+                                             y = count, fill = direction)) +
+    geom_col(position = "dodge", alpha = 0.8) +
+    geom_text(aes(label = count), position = position_dodge(width = 0.9), 
+              hjust = -0.2, size = 6, fontface = "bold") +
+    coord_flip() +
+    scale_fill_manual(values = c("Increased" = "firebrick", "Decreased" = "steelblue")) +
+    labs(title = "Differential Features by Category",
+         subtitle = "Distribution of up and down-regulated features",
+         x = "Feature Category", y = "Number of Features",
+         fill = "Direction") +
+    theme(legend.position = "bottom")
+  
+  ggsave(file.path(opt$output, "03_category_distribution.png"), 
+         p3_category, width = 12, height = 8, dpi = 300)
+  cat("  Saved: 03_category_distribution.png\n")
+}
+
+# Plot 4: Treatment effect scatter
+p5_treatment <- ggplot(comparison_data, 
+                       aes(x = Effect_size_untreated, y = Effect_size_treated, 
+                           color = treatment_impact)) +
+  geom_point(alpha = 0.6, size = 3) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  scale_color_manual(values = c("Corrective" = "green", "Exacerbating" = "red", 
+                                "Neutral" = "grey70"),
+                     name = "Treatment Impact") +
+  labs(title = "Treatment Effects on Feature Signatures",
+       subtitle = "Comparison of effect sizes: untreated vs treated",
+       x = "Effect Size (Untreated vs Control)",
+       y = "Effect Size (Treated vs Control)") +
+  theme(legend.position = "right")
+
+ggsave(file.path(opt$output, "05_treatment_effect_scatter.png"), 
+       p5_treatment, width = 12, height = 10, dpi = 300)
+cat("  Saved: 05_treatment_effect_scatter.png\n")
+
+# Plot 5: Significance change scatter
+p6_significance <- ggplot(comparison_data, 
+                         aes(x = neg_log10_p_untreated, y = neg_log10_p_treated, 
+                             color = treatment_impact)) +
+  geom_point(alpha = 0.6, size = 3) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(opt$pvalue), linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = -log10(opt$pvalue), linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Corrective" = "green", "Exacerbating" = "red", 
+                                "Neutral" = "grey70"),
+                     name = "Treatment Impact") +
+  labs(title = "Treatment Effects on Statistical Significance",
+       subtitle = "Change in p-values from untreated to treated",
+       x = "-log₁₀(p-value) Untreated vs Control",
+       y = "-log₁₀(p-value) Treated vs Control") +
+  theme(legend.position = "right")
+
+ggsave(file.path(opt$output, "06_significance_change_scatter.png"), 
+       p6_significance, width = 12, height = 10, dpi = 300)
+cat("  Saved: 06_significance_change_scatter.png\n")
+
+# Plot 6: Treatment impact by category
+if (nrow(untreated_significant) > 0) {
+  category_treatment <- comparison_data %>%
+    filter(treatment_impact %in% c("Corrective", "Exacerbating")) %>%
+    group_by(category, treatment_impact) %>%
+    summarise(count = n(), .groups = "drop")
+  
+  if (nrow(category_treatment) > 0) {
+    p8_category_treatment <- ggplot(category_treatment, 
+                                    aes(x = reorder(category, count), y = count, 
+                                        fill = treatment_impact)) +
+      geom_col(position = "dodge", alpha = 0.8) +
+      geom_text(aes(label = count), position = position_dodge(width = 0.9), 
+                hjust = -0.2, size = 6) +
+      coord_flip() +
+      scale_fill_manual(values = c("Corrective" = "green", "Exacerbating" = "red"),
+                       name = "Treatment Impact") +
+      labs(title = "Treatment Impact by Feature Category",
+           subtitle = "Distribution of corrective and exacerbating effects",
+           x = "Feature Category", y = "Number of Features") +
+      theme(legend.position = "bottom")
+    
+    ggsave(file.path(opt$output, "09_treatment_impact_by_category.png"), 
+           p8_category_treatment, width = 12, height = 8, dpi = 300)
+    cat("  Saved: 09_treatment_impact_by_category.png\n")
+  }
+}
+
+################################################################################
+# Export Results
+################################################################################
+
+cat(sprintf("\n[%s] Exporting results...\n", Sys.time()))
+
+# Create summary statistics
+summary_stats <- data.frame(
+  Metric = c("Total Features", 
+             "Significant (p<0.05) Untreated", 
+             "Significant (p<0.05) Treated",
+             "Corrective Features", 
+             "Exacerbating Features", 
+             "Neutral Features"),
+  Count = c(nrow(comparison_data), 
+            sum(comparison_data$P_value_untreated < opt$pvalue),
+            sum(comparison_data$P_value_treated < opt$pvalue),
+            sum(comparison_data$treatment_impact == "Corrective"),
+            sum(comparison_data$treatment_impact == "Exacerbating"),
+            sum(comparison_data$treatment_impact == "Neutral")),
+  Percentage = c(100,
+                100 * sum(comparison_data$P_value_untreated < opt$pvalue) / nrow(comparison_data),
+                100 * sum(comparison_data$P_value_treated < opt$pvalue) / nrow(comparison_data),
+                100 * sum(comparison_data$treatment_impact == "Corrective") / nrow(comparison_data),
+                100 * sum(comparison_data$treatment_impact == "Exacerbating") / nrow(comparison_data),
+                100 * sum(comparison_data$treatment_impact == "Neutral") / nrow(comparison_data))
+)
+
+# Export CSV files
+write.csv(comparison_data, 
+          file.path(opt$output, "treatment_comparison_results.csv"), 
+          row.names = FALSE)
+cat("  Saved: treatment_comparison_results.csv\n")
+
+write.csv(summary_stats, 
+          file.path(opt$output, "analysis_summary_statistics.csv"), 
+          row.names = FALSE)
+cat("  Saved: analysis_summary_statistics.csv\n")
+
+if (nrow(corrective_features) > 0) {
+  write.csv(head(corrective_features, 50), 
+            file.path(opt$output, "top_corrective_features.csv"), 
+            row.names = FALSE)
+  cat("  Saved: top_corrective_features.csv\n")
+}
+
+if (nrow(exacerbating_features) > 0) {
+  write.csv(head(exacerbating_features, 50), 
+            file.path(opt$output, "top_exacerbating_features.csv"), 
+            row.names = FALSE)
+  cat("  Saved: top_exacerbating_features.csv\n")
+}
+
+################################################################################
+# Final Summary
+################################################################################
+
+cat(sprintf("\n[%s] ===== ANALYSIS COMPLETE =====\n", Sys.time()))
+cat("\nSummary Statistics:\n")
+print(summary_stats, row.names = FALSE)
+
+cat("\nClassification Criteria:\n")
+cat("  CORRECTIVE (treatment reduces VCP signature):\n")
+cat("    1. Untreated significant (p<0.05) but treated less significant\n")
+cat("    2. Both significant but treated has smaller effect size\n")
+cat("\n  EXACERBATING (treatment worsens VCP signature):\n")
+cat("    1. Untreated not significant but treated becomes significant\n")
+cat("    2. Both significant but treated has larger effect size\n")
+cat("\n  NEUTRAL: All other patterns\n")
+
+cat(sprintf("\nOutput files saved to: %s\n", opt$output))
+cat("  - Multiple PNG visualization plots\n")
+cat("  - CSV files with detailed results\n")
+cat("  - Summary statistics table\n")
+
+cat(sprintf("\n[%s] Pipeline completed successfully\n", Sys.time()))
